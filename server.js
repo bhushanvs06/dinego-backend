@@ -1259,6 +1259,125 @@ app.post('/api/razorpay/verify', async (req, res) => {
   }
 });
 
+// 3. Pay using Wallet Credits
+app.post('/api/wallet/pay', async (req, res) => {
+  const { email, ordertype, tableno } = req.body;
+  try {
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!user.cart || user.cart.length === 0) return res.status(400).json({ message: 'Cart is empty' });
+
+    const subtotal = user.cart.reduce((sum, item) => sum + item.total, 0);
+    const gst = subtotal * 0.05;
+    const waiterCharge = ordertype === 'on table' ? 20 : 0;
+    const totalBill = Number((subtotal + gst + waiterCharge).toFixed(2));
+
+    const currentWallet = Number(user.wallet) || 0;
+    if (currentWallet < totalBill) {
+      return res.status(400).json({ message: `Insufficient Wallet Balance! Available: ₹${currentWallet.toFixed(2)}, Needed: ₹${totalBill.toFixed(2)}` });
+    }
+
+    user.wallet = currentWallet - totalBill;
+
+    const now = new Date();
+    const date = now.toISOString().split('T')[0];
+    const time = now.toLocaleTimeString('en-IN', { hour12: true });
+    const order_id = 'ORD' + now.getFullYear() + Math.floor(Math.random() * 100000).toString().padStart(5, '0');
+    const otp = ordertype === 'on table' ? Math.floor(100000 + Math.random() * 900000).toString() : '';
+
+    const order = {
+      order_id,
+      status: 'pending',
+      tableno: tableno || '',
+      ordertype,
+      totalBill,
+      date,
+      time,
+      paymentMethod: 'Wallet Credits',
+      otp,
+      items: user.cart,
+    };
+
+    user.orders.push(order);
+    user.cart = [];
+    await user.save();
+
+    res.json({ success: true, order_id, otp, remainingWallet: user.wallet });
+  } catch (err) {
+    res.status(500).json({ message: 'Wallet payment failed', details: err.message });
+  }
+});
+
+// 4. Customer Order Cancellation + Automatic Refund to Wallet Credits
+app.post('/api/user/cancel-order', async (req, res) => {
+  const { email, order_id } = req.body;
+  if (!email || !order_id) return res.status(400).json({ message: 'Email and order_id are required' });
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const order = user.orders.find(o => o.order_id === order_id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    if (order.status === 'cancelled') {
+      return res.status(400).json({ message: 'Order is already cancelled' });
+    }
+    if (order.status === 'completed') {
+      return res.status(400).json({ message: 'Completed orders cannot be cancelled' });
+    }
+
+    const refundAmount = Number(order.totalBill) || 0;
+    order.status = 'cancelled';
+    user.wallet = (Number(user.wallet) || 0) + refundAmount;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `Order #${order_id} cancelled. ₹${refundAmount} has been refunded to your Wallet Credits!`,
+      wallet: user.wallet
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error cancelling order' });
+  }
+});
+
+// 5. Superadmin Order Cancellation + Automatic Refund to User Wallet
+app.post('/api/cancel-order', async (req, res) => {
+  const { order_id } = req.body;
+  if (!order_id) return res.status(400).json({ message: 'order_id required' });
+
+  try {
+    const user = await User.findOne({ "orders.order_id": order_id });
+    if (user) {
+      const order = user.orders.find(o => o.order_id === order_id);
+      if (order && order.status !== 'cancelled') {
+        const refundAmount = Number(order.totalBill) || 0;
+        order.status = 'cancelled';
+        user.wallet = (Number(user.wallet) || 0) + refundAmount;
+        await user.save();
+        return res.json({ success: true, message: `Order ${order_id} cancelled & ₹${refundAmount} refunded to user's wallet.` });
+      }
+    }
+    res.status(404).json({ message: 'Order not found' });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// 6. Get User Wallet Credits Balance
+app.get('/api/user/wallet', async (req, res) => {
+  const { email } = req.query;
+  if (!email) return res.status(400).json({ message: 'Email required' });
+  try {
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json({ wallet: Number(user.wallet) || 0 });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Health check route for cloud deployment
 app.get('/', (req, res) => {
   res.json({ status: 'online', service: 'DineGo Backend API', timestamp: new Date() });
