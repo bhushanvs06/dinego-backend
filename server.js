@@ -1209,6 +1209,7 @@ app.post('/api/razorpay/verify', async (req, res) => {
     email,
     ordertype,
     tableno,
+    appliedWallet
   } = req.body;
 
   // Verify HMAC-SHA256 signature
@@ -1234,6 +1235,11 @@ app.post('/api/razorpay/verify', async (req, res) => {
     const order_id = 'ORD' + now.getFullYear() + Math.floor(Math.random() * 100000).toString().padStart(5, '0');
     const otp = ordertype === 'on table' ? Math.floor(100000 + Math.random() * 900000).toString() : '';
 
+    if (appliedWallet && Number(appliedWallet) > 0) {
+      const walletToDeduct = Math.min(Number(appliedWallet), Number(user.wallet) || 0);
+      user.wallet = Math.max(0, (Number(user.wallet) || 0) - walletToDeduct);
+    }
+
     const order = {
       order_id,
       status: 'pending',
@@ -1242,7 +1248,7 @@ app.post('/api/razorpay/verify', async (req, res) => {
       totalBill,
       date,
       time,
-      paymentMethod: 'Razorpay',
+      paymentMethod: appliedWallet > 0 ? 'Razorpay + Wallet Credits' : 'Razorpay',
       razorpay_payment_id,
       otp,
       items: user.cart,
@@ -1252,7 +1258,7 @@ app.post('/api/razorpay/verify', async (req, res) => {
     user.cart = [];
     await user.save();
 
-    res.json({ success: true, order_id, otp });
+    res.json({ success: true, order_id, otp, remainingWallet: user.wallet });
   } catch (err) {
     console.error('Razorpay verify/order error:', err);
     res.status(500).json({ message: 'Order placement failed after payment', details: err.message });
@@ -1261,7 +1267,7 @@ app.post('/api/razorpay/verify', async (req, res) => {
 
 // 3. Pay using Wallet Credits
 app.post('/api/wallet/pay', async (req, res) => {
-  const { email, ordertype, tableno } = req.body;
+  const { email, ordertype, tableno, appliedWallet } = req.body;
   try {
     const user = await User.findOne({ email });
     if (!user) return res.status(404).json({ message: 'User not found' });
@@ -1273,11 +1279,13 @@ app.post('/api/wallet/pay', async (req, res) => {
     const totalBill = Number((subtotal + gst + waiterCharge).toFixed(2));
 
     const currentWallet = Number(user.wallet) || 0;
-    if (currentWallet < totalBill) {
-      return res.status(400).json({ message: `Insufficient Wallet Balance! Available: ₹${currentWallet.toFixed(2)}, Needed: ₹${totalBill.toFixed(2)}` });
+    const walletToDeduct = appliedWallet ? Math.min(Number(appliedWallet), totalBill) : totalBill;
+
+    if (currentWallet < walletToDeduct) {
+      return res.status(400).json({ message: `Insufficient Wallet Balance! Available: ₹${currentWallet.toFixed(2)}` });
     }
 
-    user.wallet = currentWallet - totalBill;
+    user.wallet = Math.max(0, currentWallet - walletToDeduct);
 
     const now = new Date();
     const date = now.toISOString().split('T')[0];
