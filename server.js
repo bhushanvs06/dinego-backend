@@ -1380,20 +1380,26 @@ app.post('/api/user/cancel-order', async (req, res) => {
     let targetUser = null;
     let targetOrderIndex = -1;
 
-    for (const u of allUsers) {
-      if (email && u.email && u.email.toLowerCase() === email.trim().toLowerCase()) {
-        const idx = u.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
-        if (idx !== -1) {
-          targetUser = u;
-          targetOrderIndex = idx;
-          break;
-        }
+    // Priority 1: match by customer email
+    if (email) {
+      const cleanEmail = email.trim().toLowerCase();
+      targetUser = allUsers.find(u => u.email && u.email.toLowerCase() === cleanEmail);
+      if (targetUser && targetUser.orders) {
+        targetOrderIndex = targetUser.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
       }
-      const idx = u.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
-      if (idx !== -1) {
-        targetUser = u;
-        targetOrderIndex = idx;
-        break;
+    }
+
+    // Priority 2: fallback search by order_id
+    if (!targetUser || targetOrderIndex === -1) {
+      for (const u of allUsers) {
+        if (u.orders && u.orders.length > 0) {
+          const idx = u.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
+          if (idx !== -1) {
+            targetUser = u;
+            targetOrderIndex = idx;
+            break;
+          }
+        }
       }
     }
 
@@ -1423,7 +1429,7 @@ app.post('/api/user/cancel-order', async (req, res) => {
     targetUser.markModified('wallet');
     await targetUser.save();
 
-    await User.collection.updateOne(
+    await User.updateOne(
       { _id: targetUser._id },
       {
         $set: {
@@ -1455,20 +1461,26 @@ app.post('/api/cancel-order', async (req, res) => {
     let targetUser = null;
     let targetOrderIndex = -1;
 
-    for (const u of allUsers) {
-      if (userEmail && u.email && u.email.toLowerCase() === userEmail.trim().toLowerCase()) {
-        const idx = u.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
-        if (idx !== -1) {
-          targetUser = u;
-          targetOrderIndex = idx;
-          break;
-        }
+    // Priority 1: match by userEmail
+    if (userEmail) {
+      const cleanEmail = userEmail.trim().toLowerCase();
+      targetUser = allUsers.find(u => u.email && u.email.toLowerCase() === cleanEmail);
+      if (targetUser && targetUser.orders) {
+        targetOrderIndex = targetUser.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
       }
-      const idx = u.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
-      if (idx !== -1) {
-        targetUser = u;
-        targetOrderIndex = idx;
-        break;
+    }
+
+    // Priority 2: fallback search by order_id across all users
+    if (!targetUser || targetOrderIndex === -1) {
+      for (const u of allUsers) {
+        if (u.orders && u.orders.length > 0) {
+          const idx = u.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
+          if (idx !== -1) {
+            targetUser = u;
+            targetOrderIndex = idx;
+            break;
+          }
+        }
       }
     }
 
@@ -1491,7 +1503,7 @@ app.post('/api/cancel-order', async (req, res) => {
     targetUser.markModified('wallet');
     await targetUser.save();
 
-    await User.collection.updateOne(
+    await User.updateOne(
       { _id: targetUser._id },
       {
         $set: {
