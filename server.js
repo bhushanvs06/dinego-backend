@@ -53,7 +53,7 @@ const userSchema = new mongoose.Schema({
   password: String,
   phone: String,
   otp: String,
-  wallet: Number,
+  wallet: { type: Number, default: 0 },
   orders: [{
     order_id: String,
     status: String,
@@ -1401,9 +1401,12 @@ app.post('/api/user/cancel-order', async (req, res) => {
       return res.status(400).json({ message: 'Completed orders cannot be cancelled' });
     }
 
-    const refundAmount = Number(order.totalBill) || 0;
+    const refundAmount = (typeof order.totalBill === 'number' && !isNaN(order.totalBill)) ? order.totalBill : 0;
+    const currentWallet = (typeof user.wallet === 'number' && !isNaN(user.wallet)) ? user.wallet : 0;
+    const newWallet = Number((currentWallet + refundAmount).toFixed(2));
+
     order.status = 'cancelled';
-    user.wallet = (Number(user.wallet) || 0) + refundAmount;
+    user.wallet = newWallet;
     user.markModified('orders');
     user.markModified('wallet');
     await user.save();
@@ -1412,17 +1415,14 @@ app.post('/api/user/cancel-order', async (req, res) => {
     await User.updateOne(
       { _id: user._id, "orders.order_id": cleanId },
       { 
-        $set: { "orders.$.status": "cancelled" },
-        $inc: { wallet: refundAmount }
+        $set: { "orders.$.status": "cancelled", wallet: newWallet }
       }
     );
-
-    const updatedUser = await User.findById(user._id);
 
     res.json({
       success: true,
       message: `Order #${cleanId} cancelled! ₹${refundAmount} has been refunded to your Wallet Credits!`,
-      wallet: updatedUser ? updatedUser.wallet : user.wallet
+      wallet: newWallet
     });
   } catch (err) {
     console.error('Customer cancel order error:', err);
@@ -1432,13 +1432,19 @@ app.post('/api/user/cancel-order', async (req, res) => {
 
 // 5. Superadmin Order Cancellation + Automatic Refund to User Wallet
 app.post('/api/cancel-order', async (req, res) => {
-  const { order_id } = req.body;
+  const { order_id, userEmail } = req.body;
   if (!order_id) return res.status(400).json({ message: 'order_id required' });
 
   try {
     const cleanId = order_id.trim();
-    let user = await User.findOne({ "orders.order_id": cleanId });
+    let user;
 
+    if (userEmail) {
+      user = await User.findOne({ email: new RegExp('^' + userEmail.trim() + '$', 'i') });
+    }
+    if (!user) {
+      user = await User.findOne({ "orders.order_id": cleanId });
+    }
     if (!user) {
       const allUsers = await User.find({});
       user = allUsers.find(u => u.orders && u.orders.some(o => o.order_id === cleanId));
@@ -1450,9 +1456,13 @@ app.post('/api/cancel-order', async (req, res) => {
         if (order.status === 'cancelled') {
           return res.status(400).json({ message: 'Order is already cancelled' });
         }
-        const refundAmount = Number(order.totalBill) || 0;
+
+        const refundAmount = (typeof order.totalBill === 'number' && !isNaN(order.totalBill)) ? order.totalBill : 0;
+        const currentWallet = (typeof user.wallet === 'number' && !isNaN(user.wallet)) ? user.wallet : 0;
+        const newWallet = Number((currentWallet + refundAmount).toFixed(2));
+
         order.status = 'cancelled';
-        user.wallet = (Number(user.wallet) || 0) + refundAmount;
+        user.wallet = newWallet;
         user.markModified('orders');
         user.markModified('wallet');
         await user.save();
@@ -1461,17 +1471,14 @@ app.post('/api/cancel-order', async (req, res) => {
         await User.updateOne(
           { _id: user._id, "orders.order_id": cleanId },
           { 
-            $set: { "orders.$.status": "cancelled" },
-            $inc: { wallet: refundAmount }
+            $set: { "orders.$.status": "cancelled", wallet: newWallet }
           }
         );
 
-        const updatedUser = await User.findById(user._id);
-
         return res.json({
           success: true,
-          message: `Order #${cleanId} cancelled! ₹${refundAmount} refunded to ${user.email}'s wallet. New Balance: ₹${updatedUser ? updatedUser.wallet : user.wallet}`,
-          wallet: updatedUser ? updatedUser.wallet : user.wallet
+          message: `Order #${cleanId} cancelled! ₹${refundAmount} refunded to ${user.email}'s wallet. New Balance: ₹${newWallet}`,
+          wallet: newWallet
         });
       }
     }
