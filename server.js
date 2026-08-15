@@ -1224,7 +1224,7 @@ app.post('/api/razorpay/verify', async (req, res) => {
 
   // Signature valid — now place the canteen order
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: new RegExp('^' + email.trim() + '$', 'i') });
     const subtotal = user.cart.reduce((sum, item) => sum + item.total, 0);
     const gst = subtotal * 0.05;
     const waiterCharge = ordertype === 'on table' ? 20 : 0;
@@ -1265,11 +1265,64 @@ app.post('/api/razorpay/verify', async (req, res) => {
   }
 });
 
+// Universal Order Placement endpoint (supports Cash, Wallet, and Direct Order Creation)
+app.post('/api/user/order', async (req, res) => {
+  const { email, ordertype = 'take away', tableno = '', paymentMethod = 'Cash', appliedWallet = 0 } = req.body;
+  if (!email) return res.status(400).json({ message: 'Email required' });
+
+  try {
+    const user = await User.findOne({ email: new RegExp('^' + email.trim() + '$', 'i') });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!user.cart || user.cart.length === 0) return res.status(400).json({ message: 'Cart is empty' });
+
+    const subtotal = user.cart.reduce((sum, item) => sum + item.total, 0);
+    const gst = subtotal * 0.05;
+    const waiterCharge = ordertype === 'on table' ? 20 : 0;
+    const totalBill = Number((subtotal + gst + waiterCharge).toFixed(2));
+
+    let finalPaymentMethod = paymentMethod;
+
+    if (appliedWallet && Number(appliedWallet) > 0) {
+      const walletToDeduct = Math.min(Number(appliedWallet), Number(user.wallet) || 0);
+      user.wallet = Math.max(0, (Number(user.wallet) || 0) - walletToDeduct);
+      finalPaymentMethod = `${paymentMethod} + Wallet Credits`;
+    }
+
+    const now = new Date();
+    const date = now.toISOString().split('T')[0];
+    const time = now.toLocaleTimeString('en-IN', { hour12: true });
+    const order_id = 'ORD' + now.getFullYear() + Math.floor(Math.random() * 100000).toString().padStart(5, '0');
+    const otp = ordertype === 'on table' ? Math.floor(100000 + Math.random() * 900000).toString() : '';
+
+    const order = {
+      order_id,
+      status: 'pending',
+      tableno: tableno || '',
+      ordertype,
+      totalBill,
+      date,
+      time,
+      paymentMethod: finalPaymentMethod,
+      otp,
+      items: user.cart,
+    };
+
+    user.orders.push(order);
+    user.cart = [];
+    await user.save();
+
+    res.json({ success: true, order_id, otp, remainingWallet: user.wallet });
+  } catch (err) {
+    console.error('Order creation error:', err);
+    res.status(500).json({ message: 'Failed to place order', details: err.message });
+  }
+});
+
 // 3. Pay using Wallet Credits
 app.post('/api/wallet/pay', async (req, res) => {
   const { email, ordertype, tableno, appliedWallet } = req.body;
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: new RegExp('^' + email.trim() + '$', 'i') });
     if (!user) return res.status(404).json({ message: 'User not found' });
     if (!user.cart || user.cart.length === 0) return res.status(400).json({ message: 'Cart is empty' });
 
@@ -1322,7 +1375,7 @@ app.post('/api/user/cancel-order', async (req, res) => {
   if (!email || !order_id) return res.status(400).json({ message: 'Email and order_id are required' });
 
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: new RegExp('^' + email.trim() + '$', 'i') });
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     const order = user.orders.find(o => o.order_id === order_id);
@@ -1364,7 +1417,7 @@ app.post('/api/cancel-order', async (req, res) => {
         order.status = 'cancelled';
         user.wallet = (Number(user.wallet) || 0) + refundAmount;
         await user.save();
-        return res.json({ success: true, message: `Order ${order_id} cancelled & ₹${refundAmount} refunded to user's wallet.` });
+        return res.json({ success: true, message: `Order ${order_id} cancelled & ₹${refundAmount} refunded to user's wallet.`, wallet: user.wallet });
       }
     }
     res.status(404).json({ message: 'Order not found' });
@@ -1378,7 +1431,7 @@ app.get('/api/user/wallet', async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ message: 'Email required' });
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: new RegExp('^' + email.trim() + '$', 'i') });
     if (!user) return res.status(404).json({ message: 'User not found' });
     res.json({ wallet: Number(user.wallet) || 0 });
   } catch (err) {
