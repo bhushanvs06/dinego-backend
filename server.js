@@ -898,24 +898,6 @@ app.post('/api/assign-order', async (req, res) => {
   }
 });
 
-// Cancel Order endpoint (Superadmin)
-app.post('/api/cancel-order', async (req, res) => {
-  const { order_id } = req.body;
-  if (!order_id) return res.status(400).json({ message: 'order_id required' });
-  try {
-    const user = await User.findOne({ 'orders.order_id': order_id });
-    if (!user) return res.status(404).json({ message: 'Order not found' });
-    const order = user.orders.find(o => o.order_id === order_id);
-    if (order) {
-      order.status = 'cancelled';
-      await user.save();
-    }
-    res.json({ success: true, message: 'Order cancelled successfully' });
-  } catch (err) {
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
 // Get Canteen receiving orders status
 app.get('/api/canteen-status', async (req, res) => {
   try {
