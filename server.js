@@ -1376,24 +1376,36 @@ app.post('/api/user/cancel-order', async (req, res) => {
 
   try {
     const cleanId = order_id.trim();
-    let user;
-    if (email) {
-      user = await User.findOne({ email: new RegExp('^' + email.trim() + '$', 'i') });
+    const allUsers = await User.find({});
+    let targetUser = null;
+    let targetOrderIndex = -1;
+
+    for (const u of allUsers) {
+      if (email && u.email && u.email.toLowerCase() === email.trim().toLowerCase()) {
+        const idx = u.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
+        if (idx !== -1) {
+          targetUser = u;
+          targetOrderIndex = idx;
+          break;
+        }
+      }
+      const idx = u.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
+      if (idx !== -1) {
+        targetUser = u;
+        targetOrderIndex = idx;
+        break;
+      }
     }
-    if (!user) {
-      user = await User.findOne({ "orders.order_id": cleanId });
+
+    if (!targetUser || targetOrderIndex === -1) {
+      return res.status(404).json({ message: 'Order or user not found' });
     }
 
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    const order = targetUser.orders[targetOrderIndex];
 
-    const order = user.orders.find(o => o.order_id === cleanId);
-    if (!order) return res.status(404).json({ message: 'Order not found' });
-
-    // Check waiter assignment rule: customer can cancel ONLY IF waiter is not assigned
     if (order.waiterName || order.waiterEmail) {
       return res.status(400).json({ message: 'Cannot cancel order because a waiter has already been assigned!' });
     }
-
     if (order.status === 'cancelled') {
       return res.status(400).json({ message: 'Order is already cancelled' });
     }
@@ -1402,20 +1414,22 @@ app.post('/api/user/cancel-order', async (req, res) => {
     }
 
     const refundAmount = (typeof order.totalBill === 'number' && !isNaN(order.totalBill)) ? order.totalBill : 0;
-    const currentWallet = (typeof user.wallet === 'number' && !isNaN(user.wallet)) ? user.wallet : 0;
+    const currentWallet = (typeof targetUser.wallet === 'number' && !isNaN(targetUser.wallet)) ? targetUser.wallet : 0;
     const newWallet = Number((currentWallet + refundAmount).toFixed(2));
 
-    order.status = 'cancelled';
-    user.wallet = newWallet;
-    user.markModified('orders');
-    user.markModified('wallet');
-    await user.save();
+    targetUser.orders[targetOrderIndex].status = 'cancelled';
+    targetUser.wallet = newWallet;
+    targetUser.markModified('orders');
+    targetUser.markModified('wallet');
+    await targetUser.save();
 
-    // Atomic update guarantee in MongoDB
-    await User.updateOne(
-      { _id: user._id, "orders.order_id": cleanId },
-      { 
-        $set: { "orders.$.status": "cancelled", wallet: newWallet }
+    await User.collection.updateOne(
+      { _id: targetUser._id },
+      {
+        $set: {
+          [`orders.${targetOrderIndex}.status`]: 'cancelled',
+          wallet: newWallet
+        }
       }
     );
 
@@ -1437,55 +1451,64 @@ app.post('/api/cancel-order', async (req, res) => {
 
   try {
     const cleanId = order_id.trim();
-    let user;
+    const allUsers = await User.find({});
+    let targetUser = null;
+    let targetOrderIndex = -1;
 
-    if (userEmail) {
-      user = await User.findOne({ email: new RegExp('^' + userEmail.trim() + '$', 'i') });
-    }
-    if (!user) {
-      user = await User.findOne({ "orders.order_id": cleanId });
-    }
-    if (!user) {
-      const allUsers = await User.find({});
-      user = allUsers.find(u => u.orders && u.orders.some(o => o.order_id === cleanId));
-    }
-
-    if (user) {
-      const order = user.orders.find(o => o.order_id === cleanId);
-      if (order) {
-        if (order.status === 'cancelled') {
-          return res.status(400).json({ message: 'Order is already cancelled' });
+    for (const u of allUsers) {
+      if (userEmail && u.email && u.email.toLowerCase() === userEmail.trim().toLowerCase()) {
+        const idx = u.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
+        if (idx !== -1) {
+          targetUser = u;
+          targetOrderIndex = idx;
+          break;
         }
-
-        const refundAmount = (typeof order.totalBill === 'number' && !isNaN(order.totalBill)) ? order.totalBill : 0;
-        const currentWallet = (typeof user.wallet === 'number' && !isNaN(user.wallet)) ? user.wallet : 0;
-        const newWallet = Number((currentWallet + refundAmount).toFixed(2));
-
-        order.status = 'cancelled';
-        user.wallet = newWallet;
-        user.markModified('orders');
-        user.markModified('wallet');
-        await user.save();
-
-        // Atomic update guarantee in MongoDB
-        await User.updateOne(
-          { _id: user._id, "orders.order_id": cleanId },
-          { 
-            $set: { "orders.$.status": "cancelled", wallet: newWallet }
-          }
-        );
-
-        return res.json({
-          success: true,
-          message: `Order #${cleanId} cancelled! ₹${refundAmount} refunded to ${user.email}'s wallet. New Balance: ₹${newWallet}`,
-          wallet: newWallet
-        });
+      }
+      const idx = u.orders.findIndex(o => o.order_id && o.order_id.trim() === cleanId);
+      if (idx !== -1) {
+        targetUser = u;
+        targetOrderIndex = idx;
+        break;
       }
     }
-    res.status(404).json({ message: 'Order not found' });
+
+    if (!targetUser || targetOrderIndex === -1) {
+      return res.status(404).json({ message: 'Order or user not found' });
+    }
+
+    const order = targetUser.orders[targetOrderIndex];
+    if (order.status === 'cancelled') {
+      return res.status(400).json({ message: 'Order is already cancelled' });
+    }
+
+    const refundAmount = (typeof order.totalBill === 'number' && !isNaN(order.totalBill)) ? order.totalBill : 0;
+    const currentWallet = (typeof targetUser.wallet === 'number' && !isNaN(targetUser.wallet)) ? targetUser.wallet : 0;
+    const newWallet = Number((currentWallet + refundAmount).toFixed(2));
+
+    targetUser.orders[targetOrderIndex].status = 'cancelled';
+    targetUser.wallet = newWallet;
+    targetUser.markModified('orders');
+    targetUser.markModified('wallet');
+    await targetUser.save();
+
+    await User.collection.updateOne(
+      { _id: targetUser._id },
+      {
+        $set: {
+          [`orders.${targetOrderIndex}.status`]: 'cancelled',
+          wallet: newWallet
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: `Order #${cleanId} cancelled! ₹${refundAmount} refunded to ${targetUser.email}'s wallet. New Balance: ₹${newWallet}`,
+      wallet: newWallet
+    });
   } catch (err) {
     console.error('Superadmin cancel order error:', err);
-    res.status(500).json({ message: 'Server error cancelling order' });
+    res.status(500).json({ message: 'Server error cancelling order', details: err.message });
   }
 });
 
