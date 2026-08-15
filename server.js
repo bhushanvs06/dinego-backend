@@ -794,7 +794,7 @@ app.get('/api/user/orders', async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ message: 'Email required' });
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: new RegExp('^' + email.trim() + '$', 'i') });
     if (!user) return res.status(404).json({ message: 'User not found' });
     const waitersMap = await getWaitersMap();
     const sorted = [...user.orders].reverse().map(o => {
@@ -815,7 +815,7 @@ app.get('/api/user/profile', async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ message: 'Email required' });
   try {
-    const user = await User.findOne({ email }).select('-password');
+    const user = await User.findOne({ email: new RegExp('^' + email.trim() + '$', 'i') }).select('-password');
     if (!user) return res.status(404).json({ message: 'User not found' });
     res.json({ name: user.name, email: user.email, phone: user.phone, wallet: user.wallet });
   } catch (err) {
@@ -1372,14 +1372,27 @@ app.post('/api/wallet/pay', async (req, res) => {
 // 4. Customer Order Cancellation + Automatic Refund to Wallet Credits
 app.post('/api/user/cancel-order', async (req, res) => {
   const { email, order_id } = req.body;
-  if (!email || !order_id) return res.status(400).json({ message: 'Email and order_id are required' });
+  if (!order_id) return res.status(400).json({ message: 'order_id is required' });
 
   try {
-    const user = await User.findOne({ email: new RegExp('^' + email.trim() + '$', 'i') });
+    const cleanId = order_id.trim();
+    let user;
+    if (email) {
+      user = await User.findOne({ email: new RegExp('^' + email.trim() + '$', 'i') });
+    }
+    if (!user) {
+      user = await User.findOne({ "orders.order_id": cleanId });
+    }
+
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    const order = user.orders.find(o => o.order_id === order_id);
+    const order = user.orders.find(o => o.order_id === cleanId);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    // Check waiter assignment rule: customer can cancel ONLY IF waiter is not assigned
+    if (order.waiterName || order.waiterEmail) {
+      return res.status(400).json({ message: 'Cannot cancel order because a waiter has already been assigned!' });
+    }
 
     if (order.status === 'cancelled') {
       return res.status(400).json({ message: 'Order is already cancelled' });
@@ -1395,10 +1408,11 @@ app.post('/api/user/cancel-order', async (req, res) => {
 
     res.json({
       success: true,
-      message: `Order #${order_id} cancelled. ₹${refundAmount} has been refunded to your Wallet Credits!`,
+      message: `Order #${cleanId} cancelled! ₹${refundAmount} has been refunded to your Wallet Credits!`,
       wallet: user.wallet
     });
   } catch (err) {
+    console.error('Customer cancel order error:', err);
     res.status(500).json({ message: 'Server error cancelling order' });
   }
 });
@@ -1409,20 +1423,35 @@ app.post('/api/cancel-order', async (req, res) => {
   if (!order_id) return res.status(400).json({ message: 'order_id required' });
 
   try {
-    const user = await User.findOne({ "orders.order_id": order_id });
+    const cleanId = order_id.trim();
+    let user = await User.findOne({ "orders.order_id": cleanId });
+
+    if (!user) {
+      const allUsers = await User.find({});
+      user = allUsers.find(u => u.orders && u.orders.some(o => o.order_id === cleanId));
+    }
+
     if (user) {
-      const order = user.orders.find(o => o.order_id === order_id);
-      if (order && order.status !== 'cancelled') {
+      const order = user.orders.find(o => o.order_id === cleanId);
+      if (order) {
+        if (order.status === 'cancelled') {
+          return res.status(400).json({ message: 'Order is already cancelled' });
+        }
         const refundAmount = Number(order.totalBill) || 0;
         order.status = 'cancelled';
         user.wallet = (Number(user.wallet) || 0) + refundAmount;
         await user.save();
-        return res.json({ success: true, message: `Order ${order_id} cancelled & ₹${refundAmount} refunded to user's wallet.`, wallet: user.wallet });
+        return res.json({
+          success: true,
+          message: `Order #${cleanId} cancelled! ₹${refundAmount} refunded to user's wallet. New Balance: ₹${user.wallet}`,
+          wallet: user.wallet
+        });
       }
     }
     res.status(404).json({ message: 'Order not found' });
   } catch (err) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Superadmin cancel order error:', err);
+    res.status(500).json({ message: 'Server error cancelling order' });
   }
 });
 
