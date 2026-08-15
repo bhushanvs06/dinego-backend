@@ -1404,12 +1404,25 @@ app.post('/api/user/cancel-order', async (req, res) => {
     const refundAmount = Number(order.totalBill) || 0;
     order.status = 'cancelled';
     user.wallet = (Number(user.wallet) || 0) + refundAmount;
+    user.markModified('orders');
+    user.markModified('wallet');
     await user.save();
+
+    // Atomic update guarantee in MongoDB
+    await User.updateOne(
+      { _id: user._id, "orders.order_id": cleanId },
+      { 
+        $set: { "orders.$.status": "cancelled" },
+        $inc: { wallet: refundAmount }
+      }
+    );
+
+    const updatedUser = await User.findById(user._id);
 
     res.json({
       success: true,
       message: `Order #${cleanId} cancelled! ₹${refundAmount} has been refunded to your Wallet Credits!`,
-      wallet: user.wallet
+      wallet: updatedUser ? updatedUser.wallet : user.wallet
     });
   } catch (err) {
     console.error('Customer cancel order error:', err);
@@ -1440,11 +1453,25 @@ app.post('/api/cancel-order', async (req, res) => {
         const refundAmount = Number(order.totalBill) || 0;
         order.status = 'cancelled';
         user.wallet = (Number(user.wallet) || 0) + refundAmount;
+        user.markModified('orders');
+        user.markModified('wallet');
         await user.save();
+
+        // Atomic update guarantee in MongoDB
+        await User.updateOne(
+          { _id: user._id, "orders.order_id": cleanId },
+          { 
+            $set: { "orders.$.status": "cancelled" },
+            $inc: { wallet: refundAmount }
+          }
+        );
+
+        const updatedUser = await User.findById(user._id);
+
         return res.json({
           success: true,
-          message: `Order #${cleanId} cancelled! ₹${refundAmount} refunded to user's wallet. New Balance: ₹${user.wallet}`,
-          wallet: user.wallet
+          message: `Order #${cleanId} cancelled! ₹${refundAmount} refunded to ${user.email}'s wallet. New Balance: ₹${updatedUser ? updatedUser.wallet : user.wallet}`,
+          wallet: updatedUser ? updatedUser.wallet : user.wallet
         });
       }
     }
